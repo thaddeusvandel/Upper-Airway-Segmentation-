@@ -1,0 +1,48 @@
+# Model Configuration for Nasal Airway Segmentation
+
+# Model Architecture
+model:
+  type: "UNet"
+  spatial_dims: 3
+  in_channels: 1
+  out_channels: 1
+  channels: [16, 32, 64, 128, 256]
+  strides: [2, 2, 2, 2]
+  num_res_units: 2
+  dropout: 0.1
+  norm: "batch"
+
+# Model Checkpoints
+checkpoints:
+  model1:
+    path: "models/model1_without_P001/best_metric_model.pth"
+    name: "Model 1 (Without P001)"
+    description: "Trained without P001 in training set"
+  model2:
+    path: "models/model2_with_P001/best_metric_model.pth"
+    name: "Model 2 (With P001)"
+    description: "Trained with P001 in training set"
+
+# Preprocessing
+preprocessing:
+  spatial_size: [128, 128, 128]
+  spacing: [1.0, 1.0, 1.0]
+  intensity_range:
+    a_min: -1000  # HU
+    a_max: 500
+    b_min: 0.0
+    b_max: 1.0
+  orientation: "RAS"
+
+# Inference
+inference:
+  device: "cuda"  # or "cpu"
+  batch_size: 1
+  threshold: 0.5
+
+# Output
+output:
+  save_visualizations: true
+  save_meshes: true
+  save_metrics: true
+  visualization_dpi: 300

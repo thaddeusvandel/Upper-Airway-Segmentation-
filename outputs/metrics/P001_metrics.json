@@ -1,0 +1,37 @@
+{
+  "case_name": "P001",
+  "timestamp": "2026-01-08T21:11:35.267209",
+  "models": [
+    "Model 1"
+  ],
+  "metrics": {
+    "Model 1": {
+      "dice": 0.8046045899391174,
+      "iou": 0.6730865836143494,
+      "sensitivity": 0.7588505148887634,
+      "specificity": 0.9943259954452515,
+      "precision": 0.8562300205230713,
+      "f1": 0.8046040743961167,
+      "volume_similarity": 0.9397060871124268,
+      "loss": 0
+    }
+  },
+  "spatial_size": [
+    192,
+    240,
+    64
+  ],
+  "spacing": {
+    "original": [
+      0.5859375,
+      0.5859375,
+      1.5000000000000002
+    ],
+    "adjusted": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "preprocessing": "padding (preserves resolution)"
+}
