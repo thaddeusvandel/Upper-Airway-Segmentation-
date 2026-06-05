@@ -95,12 +95,12 @@ class NasalAirwayPredictor:
             self.checkpoints.append(checkpoint)
         
         if self.verbose:
-            print(f"✓ Loaded {len(self.models)} model(s) on {self.device}")
-            print(f"✓ Using padding to spatial size: {self.spatial_size}")
+            print(f"[SUCCESS] Loaded {len(self.models)} model(s) on {self.device}")
+            print(f"[SUCCESS] Using padding to spatial size: {self.spatial_size}")
             if self.invert:
-                print(f"✓ Inverse transform enabled — predictions will be restored to original patient space")
+                print(f"[SUCCESS] Inverse transform enabled - predictions will be restored to original patient space")
             else:
-                print(f"⚠ Inverse transform disabled — outputs will remain in model space ({self.spatial_size})")
+                print(f"[WARNING] Inverse transform disabled - outputs will remain in model space ({self.spatial_size})")
     
     def _setup_transforms(self):
         """Setup preprocessing and (optionally) inverse post-processing transforms.
@@ -260,11 +260,11 @@ class NasalAirwayPredictor:
                 pred_orig = (inverted["pred"].numpy()[0] > 0.5).astype(np.float32)
                 predictions_np_orig.append(pred_orig)
                 if self.verbose:
-                    print(f"  ✓ Inverted mask shape: {pred_orig.shape} "
+                    print(f"  [SUCCESS] Inverted mask shape: {pred_orig.shape} "
                           f"(original spacing: {original_spacing})")
 
             # Invert label to original space for visualisations
-            lbl_meta = transformed_data["label"][0].cpu()  # shape: (1, H, W, D)
+            lbl_meta = transformed_data["label"].cpu()
             lbl_meta.applied_operations = (
                 transformed_data["image"].applied_operations.copy()
             )
@@ -273,7 +273,7 @@ class NasalAirwayPredictor:
             label_np_orig = (inverted_label["pred"].numpy()[0] > 0.5).astype(np.float32)
 
             # Invert image to original space for 2-D slice visualisations
-            img_meta = transformed_data["image"][0].cpu()  # shape: (1, H, W, D)
+            img_meta = transformed_data["image"].cpu()
             img_meta.applied_operations = (
                 transformed_data["image"].applied_operations.copy()
             )
@@ -418,7 +418,7 @@ class NasalAirwayPredictor:
         
         if self.verbose:
             print(f"\n{'='*70}")
-            print("✓ PREDICTION COMPLETE")
+            print("[SUCCESS] PREDICTION COMPLETE")
             print(f"{'='*70}")
             print(f"Outputs saved to: {output_dir}")
         
