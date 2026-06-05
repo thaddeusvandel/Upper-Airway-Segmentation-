@@ -19,7 +19,7 @@ from monai.networks.nets import UNet
 from monai.transforms import (
     Compose, EnsureChannelFirstd, Orientationd, Spacingd,
     ScaleIntensityRanged, CropForegroundd, SpatialPadd,
-    CenterSpatialCropd, Lambdad, EnsureTyped
+    CenterSpatialCropd, Lambdad, EnsureTyped, Invertd
 )
 
 from .metrics import SegmentationMetrics
@@ -47,7 +47,8 @@ class NasalAirwayPredictor:
         device: str = 'cuda',
         spatial_size: Tuple[int, int, int] = (192, 240, 64),
         model_config: Optional[Dict] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        invert: bool = True
     ):
         """
         Initialize the predictor.
@@ -59,10 +60,14 @@ class NasalAirwayPredictor:
             spatial_size: Target spatial size for padding (default: 192, 240, 64)
             model_config: Model architecture configuration
             verbose: Whether to print progress messages
+            invert: If True (default), predictions are mapped back to original
+                    patient CT geometry after inference using MONAI Invertd.
+                    Set to False to keep outputs in model space (192×240×64).
         """
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.spatial_size = spatial_size
         self.verbose = verbose
+        self.invert = invert
         
         # Default model configuration
         self.model_config = model_config or {
@@ -92,22 +97,53 @@ class NasalAirwayPredictor:
         if self.verbose:
             print(f"✓ Loaded {len(self.models)} model(s) on {self.device}")
             print(f"✓ Using padding to spatial size: {self.spatial_size}")
+            if self.invert:
+                print(f"✓ Inverse transform enabled — predictions will be restored to original patient space")
+            else:
+                print(f"⚠ Inverse transform disabled — outputs will remain in model space ({self.spatial_size})")
     
     def _setup_transforms(self):
-        """Setup preprocessing transforms with padding instead of resizing."""
-        self.transforms = Compose([
+        """Setup preprocessing and (optionally) inverse post-processing transforms.
+
+        ``pre_transforms`` is the unchanged forward pipeline used during both
+        training and inference — do NOT reorder its steps.
+
+        ``post_transforms`` uses MONAI's Invertd to replay the recorded
+        ``applied_operations`` in reverse, restoring the prediction mask to the
+        original patient CT geometry (native shape, spacing, and orientation).
+        """
+        self.pre_transforms = Compose([
             LoadNrrd(keys=["image", "label"]),
             EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
-            Spacingd(keys=["image", "label"], pixdim=(1.0, 1.0, 1.0), 
+            Spacingd(keys=["image", "label"], pixdim=(1.0, 1.0, 1.0),
                      mode=("bilinear", "nearest")),
-            ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=500, 
-                                b_min=0.0, b_max=1.0, clip=True),
+            ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=500,
+                                 b_min=0.0, b_max=1.0, clip=True),
             CropForegroundd(keys=["image", "label"], source_key="image"),
             CenterSpatialCropd(keys=["image", "label"], roi_size=self.spatial_size),
-            SpatialPadd(keys=["image", "label"], spatial_size=self.spatial_size, mode="constant"),
+            SpatialPadd(keys=["image", "label"], spatial_size=self.spatial_size,
+                        mode="constant"),
             Lambdad(keys=["label"], func=lambda x: (x > 0).astype(np.float32)),
             EnsureTyped(keys=["image", "label"], dtype=torch.float32),
+        ])
+
+        # Keep the legacy attribute so any external callers don't break.
+        self.transforms = self.pre_transforms
+
+        # Post-processing: undo spatial transforms for the prediction key.
+        # nearest_interp=True ensures binary masks stay binary after resampling.
+        self.post_transforms = Compose([
+            Invertd(
+                keys=["pred"],
+                transform=self.pre_transforms,
+                orig_keys=["image"],
+                meta_keys=["pred_meta_dict"],
+                orig_meta_keys=["image_meta_dict"],
+                meta_key_postfix="meta_dict",
+                nearest_interp=True,
+                to_tensor=True,
+            )
         ])
     
     def _load_model(self, model_path: str, name: str) -> Tuple[UNet, Dict]:
@@ -137,9 +173,18 @@ class NasalAirwayPredictor:
         output_dir: str = 'outputs',
         save_visualizations: bool = True,
         save_meshes: bool = True,
-        save_metrics: bool = True
+        save_metrics: bool = True,
+        invert: Optional[bool] = None
     ) -> Dict:
-        """Run prediction on a single case."""
+        """
+        Run prediction on a single case.
+
+        Args (additional to existing):
+            invert: Override the instance-level ``self.invert`` flag for this
+                    call only.  ``None`` means use the instance default.
+        """
+        # Resolve the invert flag for this call
+        do_invert = self.invert if invert is None else invert
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -161,15 +206,19 @@ class NasalAirwayPredictor:
             nrrd.write(str(temp_label_path), dummy_label, header)
             data_dict["label"] = str(temp_label_path)
         
-        transformed_data = self.transforms(data_dict)
+        # Run forward preprocessing.  Keep ``transformed_data`` alive — its
+        # MetaTensor objects carry the ``applied_operations`` log that Invertd
+        # needs to undo each step in reverse order.
+        transformed_data = self.pre_transforms(data_dict)
         image = transformed_data["image"].unsqueeze(0).to(self.device)
         label = transformed_data["label"].unsqueeze(0).to(self.device)
         
-        # Get spacing info
+        # Read original spacing from the NRRD header (used for mesh generation
+        # in original patient space after inversion).
         _, header = nrrd.read(image_path)
-        original_spacing = header.get('space directions', np.eye(3))
-        spacing = tuple(np.abs(np.diag(original_spacing)[:3]))
-        adjusted_spacing = (1.0, 1.0, 1.0)
+        space_dirs = header.get('space directions', np.eye(3))
+        original_spacing = tuple(np.abs(np.diag(np.array(space_dirs))[:3]))
+        model_spacing = (1.0, 1.0, 1.0)  # spacing after Spacingd resampling
         
         # Run inference
         if self.verbose:
@@ -177,19 +226,72 @@ class NasalAirwayPredictor:
             print(f"Input shape: {image.shape}")
         
         predictions = []
-        predictions_np = []
-        
+        # model-space binary masks — used for Dice/IoU metrics
+        predictions_np_model = []
+
         with torch.no_grad():
             for model in self.models:
                 pred = torch.sigmoid(model(image))
                 predictions.append(pred)
                 pred_np = (pred.cpu().numpy()[0, 0] > 0.5).astype(np.float32)
-                predictions_np.append(pred_np)
-        
-        # Prepare data for analysis
-        image_np = image.cpu().numpy()[0, 0]
-        label_np = label.cpu().numpy()[0, 0]
+                predictions_np_model.append(pred_np)
+
+        # Model-space arrays (correct space for metrics)
+        image_np_model = image.cpu().numpy()[0, 0]
+        label_np_model = label.cpu().numpy()[0, 0]
         has_ground_truth = label_path is not None
+
+        # ------------------------------------------------------------------ #
+        # Inverse transform: restore predictions to original patient geometry #
+        # ------------------------------------------------------------------ #
+        if do_invert:
+            if self.verbose:
+                print("\nInverting predictions to original patient space...")
+
+            predictions_np_orig = []
+            for pred_tensor in predictions:
+                # Detach to CPU MetaTensor and share the image's transform log
+                pred_meta = pred_tensor[0].cpu()          # shape: (1, H, W, D)
+                pred_meta.applied_operations = (
+                    transformed_data["image"].applied_operations.copy()
+                )
+                transformed_data["pred"] = pred_meta
+                inverted = self.post_transforms(transformed_data)
+                pred_orig = (inverted["pred"].numpy()[0] > 0.5).astype(np.float32)
+                predictions_np_orig.append(pred_orig)
+                if self.verbose:
+                    print(f"  ✓ Inverted mask shape: {pred_orig.shape} "
+                          f"(original spacing: {original_spacing})")
+
+            # Invert label to original space for visualisations
+            lbl_meta = transformed_data["label"][0].cpu()  # shape: (1, H, W, D)
+            lbl_meta.applied_operations = (
+                transformed_data["image"].applied_operations.copy()
+            )
+            transformed_data["pred"] = lbl_meta
+            inverted_label = self.post_transforms(transformed_data)
+            label_np_orig = (inverted_label["pred"].numpy()[0] > 0.5).astype(np.float32)
+
+            # Invert image to original space for 2-D slice visualisations
+            img_meta = transformed_data["image"][0].cpu()  # shape: (1, H, W, D)
+            img_meta.applied_operations = (
+                transformed_data["image"].applied_operations.copy()
+            )
+            transformed_data["pred"] = img_meta
+            inverted_image = self.post_transforms(transformed_data)
+            image_np_orig = inverted_image["pred"].numpy()[0]
+
+            # Use original-space data for mesh and visualisation
+            predictions_np = predictions_np_orig
+            image_np      = image_np_orig
+            label_np      = label_np_orig
+            mesh_spacing  = original_spacing
+        else:
+            # Stay in model space — useful for debugging or fast prototyping
+            predictions_np = predictions_np_model
+            image_np      = image_np_model
+            label_np      = label_np_model
+            mesh_spacing  = model_spacing
         
         # Calculate metrics
         metrics_results = {}
@@ -219,13 +321,13 @@ class NasalAirwayPredictor:
         
         if has_ground_truth:
             verts_gt, faces_gt, _ = create_mesh_from_mask(
-                label_np, adjusted_spacing, "Ground Truth", verbose=self.verbose
+                label_np, mesh_spacing, "Ground Truth", verbose=self.verbose
             )
             mesh_data['ground_truth'] = {'vertices': verts_gt, 'faces': faces_gt}
-        
+
         for i, (pred_np, name) in enumerate(zip(predictions_np, self.model_names)):
             verts, faces, _ = create_mesh_from_mask(
-                pred_np, adjusted_spacing, name, verbose=self.verbose
+                pred_np, mesh_spacing, name, verbose=self.verbose
             )
             mesh_data[name] = {'vertices': verts, 'faces': faces}
         
@@ -303,8 +405,8 @@ class NasalAirwayPredictor:
                 'metrics': metrics_results,
                 'spatial_size': list(self.spatial_size),
                 'spacing': {
-                    'original': list(spacing),
-                    'adjusted': list(adjusted_spacing)
+                    'original': list(original_spacing),
+                    'model': list(model_spacing)
                 },
                 'preprocessing': 'padding (preserves resolution)'
             }
@@ -322,11 +424,18 @@ class NasalAirwayPredictor:
         
         return {
             'case_name': case_name,
+            # Original-space predictions (or model-space if invert=False)
             'predictions': predictions_np,
+            # Model-space predictions always available for metric validation
+            'predictions_model_space': predictions_np_model,
             'metrics': metrics_results,
             'mesh_data': mesh_data,
             'output_paths': output_paths,
-            'spacing': {'original': spacing, 'adjusted': adjusted_spacing}
+            'spacing': {
+                'original': original_spacing,
+                'model': model_spacing,
+                'inverted': do_invert
+            }
         }
     
     def batch_predict(
