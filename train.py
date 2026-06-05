@@ -102,8 +102,9 @@ def main(args):
     train_ds = CacheDataset(data=train_files, transform=train_transforms, cache_rate=args.cache_rate, num_workers=args.workers)
     val_ds = CacheDataset(data=val_files, transform=val_transforms, cache_rate=args.cache_rate, num_workers=args.workers)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=torch.cuda.is_available())
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.workers, pin_memory=torch.cuda.is_available())
+    from monai.data import list_data_collate
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=torch.cuda.is_available(), collate_fn=list_data_collate)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.workers, pin_memory=torch.cuda.is_available(), collate_fn=list_data_collate)
 
     # Model
     model = AttentionUnet(
@@ -136,10 +137,9 @@ def main(args):
 
         for batch_data in train_loader:
             step += 1
-            # Note: Because of RandCropByPosNegLabeld (num_samples=2), batch size effectively multiplies by 2
-            # We reshape to fold the patches into the batch dimension
-            inputs = batch_data["image"].view(-1, 1, *roi_size).to(device)
-            labels = batch_data["label"].view(-1, 1, *roi_size).to(device)
+            # list_data_collate automatically folds the num_samples patches into the batch dimension
+            inputs = batch_data["image"].to(device)
+            labels = batch_data["label"].to(device)
 
             optimizer.zero_grad()
             if scaler is not None:
