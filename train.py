@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 import monai
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, Orientationd, Spacingd,
-    ScaleIntensityRanged, CropForegroundd, EnsureTyped,
+    ScaleIntensityRanged, CropForegroundd, EnsureTyped, SpatialPadd,
     RandCropByPosNegLabeld, RandRotated, RandFlipd, RandZoomd,
     RandGaussianNoised, RandAdjustContrastd, RandAffined
 )
@@ -61,6 +61,9 @@ def main(args):
         Spacingd(keys=["image", "label"], pixdim=(1.0, 1.0, 1.0), mode=("bilinear", "nearest")),
         ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=500, b_min=0.0, b_max=1.0, clip=True),
         CropForegroundd(keys=["image", "label"], source_key="image"),
+        
+        # Ensure images are at least as large as the crop ROI
+        SpatialPadd(keys=["image", "label"], spatial_size=roi_size, mode="constant"),
         
         # Patch-based training (crucial for capturing fine details without static cropping)
         RandCropByPosNegLabeld(
