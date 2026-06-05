@@ -106,6 +106,16 @@ def parse_args():
         default=[192, 240, 64],
         help='Target spatial size for padding (default: 192 240 64)'
     )
+    parser.add_argument(
+        '--no-invert',
+        action='store_true',
+        help=(
+            'Skip inverse transform after inference. Outputs will remain in '
+            'model space (192×240×64 at 1mm isotropic) instead of being '
+            'restored to the original patient CT geometry. Useful for '
+            'debugging or when model-space outputs are explicitly desired.'
+        )
+    )
     
     # Device arguments
     parser.add_argument(
@@ -135,7 +145,8 @@ def main():
         model_names=args.model_names,
         device=args.device,
         spatial_size=tuple(args.spatial_size),
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        invert=not args.no_invert
     )
     
     if args.batch:
