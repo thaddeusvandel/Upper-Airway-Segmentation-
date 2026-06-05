@@ -79,7 +79,9 @@ def main(args):
         
         # Rich Augmentations
         RandAffined(keys=["image", "label"], prob=0.5, rotate_range=(0.1, 0.1, 0.1), scale_range=(0.1, 0.1, 0.1), mode=("bilinear", "nearest")),
-        RandFlipd(keys=["image", "label"], spatial_axis=[0, 1, 2], prob=0.10),
+        RandFlipd(keys=["image", "label"], spatial_axis=0, prob=0.10),
+        RandFlipd(keys=["image", "label"], spatial_axis=1, prob=0.10),
+        RandFlipd(keys=["image", "label"], spatial_axis=2, prob=0.10),
         RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.1),
         RandAdjustContrastd(keys=["image"], prob=0.2, gamma=(0.5, 2.0)),
         
@@ -104,7 +106,7 @@ def main(args):
 
     from monai.data import list_data_collate
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=torch.cuda.is_available(), collate_fn=list_data_collate)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.workers, pin_memory=torch.cuda.is_available(), collate_fn=list_data_collate)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.workers, pin_memory=torch.cuda.is_available())
 
     # Model
     model = AttentionUnet(
