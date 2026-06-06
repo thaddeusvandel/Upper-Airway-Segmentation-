@@ -15,7 +15,7 @@ from monai.transforms import (
     RandGaussianNoised, RandAdjustContrastd, RandAffined
 )
 from monai.data import CacheDataset, decollate_batch
-from monai.networks.nets import AttentionUnet
+from monai.networks.nets import UNet
 from monai.losses import DiceFocalLoss
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
@@ -109,14 +109,15 @@ def main(args):
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.workers, pin_memory=torch.cuda.is_available())
 
     # Model
-    model = AttentionUnet(
+    model = UNet(
         spatial_dims=3,
         in_channels=1,
         out_channels=1,
         channels=(16, 32, 64, 128, 256),
         strides=(2, 2, 2, 2),
+        num_res_units=2,
         dropout=0.1,
-    ).to(device) # AttentionUnet naturally handles missing details better by focusing feature maps
+    ).to(device) # Standard UNet with residual units for better gradient flow
 
     # Loss, Optimizer, Metric
     # DiceFocalLoss is highly effective for class imbalance and thin structures
